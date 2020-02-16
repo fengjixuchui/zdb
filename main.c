@@ -1,16 +1,20 @@
 #include "debugger.h"
 #include "elf-parser.h"
 #include "colors.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <sys/types.h>
 #include <stdlib.h>
+#include <fcntl.h>
+#include <signal.h>
 
 int terminal(char *argv[]);
-int open_for_analysis(int32_t *fd, char *argv[], char *raw_file);
+int open_for_analysis(int32_t *fd, char *argv[]);
 void print_banner();
 int parse_option(char *argument);
 void print_help();
+char *get_raw(char *argv[]);
 
 // Defines for options.
 #define RUN         0
@@ -28,6 +32,7 @@ void print_help();
 #define HELP       12 
 #define INVALID    13
 #define DISAS      14
+#define HEX        15
 
 
 int main(int argc, char *argv[]){
@@ -56,26 +61,15 @@ int terminal(char *argv[]) {
 	Elf64_Ehdr eh64;
 	Elf64_Shdr* sh_tbl;
 
-	// Store the raw file.
-	char *raw_file = NULL;
+	// Open up the raw file used for disas.
+	char *raw_file = get_raw(argv);
+	if (raw_file == NULL){
+		printf(CYN"[x] Could not open file.\n");
+	}	
 
 	// If file exists get pointer to it for elf analysis.
-	if (open_for_analysis(&fd, argv, raw_file)){
+	if (open_for_analysis(&fd, argv)){
 	} else { return 1; }
-
-	// Open up the raw file.
-	FILE *f = fopen(argv[1], "rb");
-	fseek(f, 0, SEEK_END);
-	long fsize = ftell(f);
-	fseek(f, 0, SEEK_SET);  /* same as rewind(f); */
-
-	raw_file = malloc(fsize + 1);
-	fread(raw_file, 1, fsize, f);
-	fclose(f);
-
-	raw_file[fsize] = 0;
-
-	printf("%s", (unsigned char *)&raw_file[0x4d0]);
 
 	read_elf_header(fd, &eh);
 	if(!is_ELF(eh)) { return 1; }
@@ -91,7 +85,8 @@ int terminal(char *argv[]) {
 		return 1;
 	}
 
-	// It's on.
+	// Everything is ok -_-
+	// Lets start.
 	print_banner();
 
 
@@ -187,17 +182,50 @@ int terminal(char *argv[]) {
 
 			case DISAS:				
 				if (sscanf(temp, "%s %s", argument, amount) == 1){
-					printf(CYN"[!] Memory address/function required.\n");
-					break;
-				}
-				sscanf(temp, "%s %s", argument, amount);					
-				result = search_funcs64(fd, eh64, sh_tbl, amount);
-				if (result.size != 0){
-					printf(RESET CYN"Disassembly of <%s>\n", amount);
-					disas(pid, result.size, result.address, fd, eh64, sh_tbl, regs.rip, raw_file);
+					if (tracee_status == not_running){
+						printf(CYN"[!] Can't disassemble here!\n");
+					} else {
+						disas(pid, 0x30, regs.rip, fd, eh64, sh_tbl, regs.rip, raw_file);
+					}					
 				} else {
-					printf(CYN"[!] Invalid address/function.\n");
-				}								
+					number = strtoul(amount, &ptr, 16);
+					if (number == 0){
+						sscanf(temp, "%s %s", argument, amount);					
+						result = search_funcs64(fd, eh64, sh_tbl, amount);
+						if (result.size != 0){
+							printf(RESET CYN"Disassembly of %s\n", amount);
+							disas(pid, result.size, result.address, fd, eh64, sh_tbl, regs.rip, raw_file);
+						} else {
+							printf(CYN"[!] Invalid address/function.\n");
+						}
+					} else {
+						disas(pid, 0x80, number, fd, eh64, sh_tbl, regs.rip, raw_file);
+					}
+				}											
+			break;
+
+			case HEX:				
+				if (sscanf(temp, "%s %s", argument, amount) == 1){
+					if (tracee_status == not_running){
+						printf(CYN"[!] Can't disassemble here!\n");
+					} else {
+						hex(pid, 0x30, regs.rip, fd, eh64, sh_tbl, regs.rip, raw_file);
+					}					
+				} else {
+					number = strtoul(amount, &ptr, 16);
+					if (number == 0){
+						sscanf(temp, "%s %s", argument, amount);					
+						result = search_funcs64(fd, eh64, sh_tbl, amount);
+						if (result.size != 0){
+							printf(RESET CYN"Hexdump of %s\n", amount);
+							hex(pid, result.size, result.address, fd, eh64, sh_tbl, regs.rip, raw_file);
+						} else {
+							printf(CYN"[!] Invalid address/function.\n");
+						}
+					} else {
+						hex(pid, 0x80, number, fd, eh64, sh_tbl, regs.rip, raw_file);
+					}
+				}											
 			break;
 
 			case HEADER:
@@ -244,11 +272,12 @@ int parse_option(char *argument){
 	else if (strcmp(argument, "func"  ) == 0) { return FUNCTIONS;  } 
 	else if (strcmp(argument, "help"  ) == 0) { return HELP;       }
 	else if (strcmp(argument, "disas" ) == 0) { return DISAS;      }
+	else if (strcmp(argument, "hex"   ) == 0) { return HEX;        }
 	else                                      { return INVALID;    }
 }
 
 
-int open_for_analysis(int32_t *fd, char *argv[], char *raw_file){	
+int open_for_analysis(int32_t *fd, char *argv[]){	
 	*fd = open(argv[1], O_RDONLY|O_SYNC);
 	
 	if(fd < 0) {
@@ -271,17 +300,32 @@ void print_banner(){
 }
 
 void print_help(){
-	printf(GRN"zdb - A simple 64 bit elf debugger.\n");
+	printf(DGR"zdb - A simple 64 bit elf debugger.\n");
 	printf(GRN"Commands:\n");
-	printf(GRN"r"DGR"              - starts/restarts execution.\n");
-	printf(GRN"c"DGR"              - continues execution until end or breakpoint.\n");
-	printf(GRN"b [addr/func]"DGR"  - sets break at specified address.\n"); 
-	printf(GRN"breaks"DGR"         - shows set breakpoints.\n");
-	printf(GRN"stack [amount]"DGR" - displays stackdump of [amount] length.\n");
-	printf(GRN"regs"DGR"           - displays register values.\n");
-	printf(GRN"sect"DGR"           - displays elf sections.\n");
-	printf(GRN"func"DGR"           - displays binary functions.\n");
-	printf(GRN"disas [func]"DGR"   - displays disassembly of specified function.\n");
-	printf(GRN"q"DGR"              - quits program.\n");
+	printf(GRN"r"DGR"                 - starts/restarts execution.\n");
+	printf(GRN"c"DGR"                 - continues execution until end or breakpoint.\n");
+	printf(GRN"b [addr/func]"DGR"     - sets break at specified address.\n"); 
+	printf(GRN"breaks"DGR"            - shows set breakpoints.\n");
+	printf(GRN"stack [amount]"DGR"    - displays stackdump of [amount] length.\n");
+	printf(GRN"regs"DGR"              - displays register values.\n");
+	printf(GRN"sect"DGR"              - displays elf sections.\n");
+	printf(GRN"func"DGR"              - displays binary functions.\n");
+	printf(GRN"disas [func/addr]"DGR" - displays disassembly of specified area.\n");
+	printf(GRN"hex [func/addr]"DGR"   - displays hexdump of specified area.\n");
+	printf(GRN"q"DGR"                 - quits program.\n");
 	return;
+}
+
+char *get_raw(char *argv[]) {
+	// Store the raw file.
+	char *raw_file = NULL;
+	FILE *f = fopen(argv[1], "rb");
+	fseek(f, 0, SEEK_END);
+	long fsize = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	raw_file = malloc(fsize + 1);
+	fread(raw_file, 1, fsize, f);
+	fclose(f);
+	raw_file[fsize] = 0;
+	return raw_file;
 }

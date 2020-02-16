@@ -1,3 +1,11 @@
+#include <stdio.h>
+#include <assert.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+#include <errno.h>
+
 #include "elf-parser.h"
 #include "colors.h"
 
@@ -261,6 +269,7 @@ void print_symbols64(int32_t fd, Elf64_Ehdr eh, Elf64_Shdr sh_table[]) {
 	}
 }
 
+// Print functions nicely.
 void print_func_table64(int32_t fd, Elf64_Ehdr eh, Elf64_Shdr sh_table[], uint32_t symbol_table, uint32_t plt_table, Elf64_Addr plt_mem) {
 	char *str_tbl;
 	Elf64_Rela* plt_tbl;
@@ -281,12 +290,10 @@ void print_func_table64(int32_t fd, Elf64_Ehdr eh, Elf64_Shdr sh_table[], uint32
 	plt_count = (sh_table[plt_table].sh_size/sizeof(Elf64_Rela));
 	symbol_count = (sh_table[symbol_table].sh_size/sizeof(Elf64_Sym));
 
-	printf(RED"%d symbols\n", symbol_count);
-
 	if (plt_table) {
-		printf(CYN".got       .plt         symbol_name\n");
+		printf(CYN"\n.got       .plt         symbol_name\n");
 	} else {
-		printf(CYN"address      symbol_name\n");
+		printf(CYN"\naddress      symbol_name\n");
 	}
 
 	for(i=0; i< symbol_count; i++) {
@@ -311,6 +318,7 @@ void print_func_table64(int32_t fd, Elf64_Ehdr eh, Elf64_Shdr sh_table[], uint32
 	}
 }
 
+// Print functions nicely.
 void print_funcs64(int32_t fd, Elf64_Ehdr eh, Elf64_Shdr sh_table[]) {
 	uint32_t i;
 	int plt_rela_table = 0;
@@ -381,6 +389,7 @@ char *search_func_tbl_by_addr(int32_t fd, Elf64_Ehdr eh, Elf64_Shdr sh_table[],
 	return NULL;
 }
 
+// Find func name from address (include linked functions)
 char *search_funcs_by_addr(int32_t fd, Elf64_Ehdr eh, Elf64_Shdr sh_table[], long search_addr) {
 	uint32_t i;
 	int plt_rela_table = 0;
@@ -430,6 +439,7 @@ struct search_term search_funcs64(int32_t fd, Elf64_Ehdr eh, Elf64_Shdr sh_table
 	return result;
 }
 
+// Search user func table by name.
 struct search_term search_func_table64(int32_t fd, Elf64_Ehdr eh, Elf64_Shdr sh_table[], uint32_t symbol_table, char *query) {
 	char *str_tbl;
 	Elf64_Sym* sym_tbl;
